@@ -44,7 +44,12 @@ if "init" not in st.session_state:
         st.session_state[f"cfg_{k}"] = v
     st.session_state.init = True
 
-# 实时同步配置
+def add_format_tag(tag):
+    st.session_state["cfg_NAME_FORMAT"] += tag
+
+def clear_format():
+    st.session_state["cfg_NAME_FORMAT"] = ""
+
 CONFIG = {k: st.session_state[f"cfg_{k}"] for k in DEFAULT_CONFIG.keys()}
 
 def reset_config_callback():
@@ -52,7 +57,7 @@ def reset_config_callback():
         st.session_state[f"cfg_{k}"] = v
     save_local_config(DEFAULT_CONFIG)
 
-# ================= 2. 核心转换算法 (您的原始算法) =================
+# ================= 2. 核心转换算法 =================
 def get_ass_opacity_hex(opacity_pct):
     try: alpha = int(255 * (1 - max(0.0, min(1.0, opacity_pct)))); return f"{alpha:02x}"
     except: return "00"
@@ -116,7 +121,6 @@ if "download_files" not in st.session_state: st.session_state.download_files = {
 def update_realtime_log(msg, placeholder=None):
     current_time = datetime.now().strftime("%H:%M:%S")
     st.session_state.logs.append(f"[{current_time}] {msg}")
-    if len(st.session_state.logs) > 60: st.session_state.logs.pop(0)
     if placeholder:
         log_html = f'<div class="log-container" id="log-box">{"<br>".join(st.session_state.logs)}</div>'
         placeholder.markdown(log_html, unsafe_allow_html=True)
@@ -147,9 +151,22 @@ with st.sidebar:
         st.button("🔄 重置设置", on_click=reset_config_callback)
     
     st.write("---")
-    with st.expander("🎨 弹幕样式 (ASS)", expanded=True):
+    with st.expander("🎨 命名与样式", expanded=True):
         st.checkbox("保存为 ASS 格式", key="cfg_SAVE_AS_ASS")
+        
+        st.write("格式占位符：")
+        tag_col1, tag_col2, tag_col3, tag_col4 = st.columns([1, 1, 1, 1.2])
+        with tag_col1:
+            st.button("[标题]", on_click=add_format_tag, args=("[标题]",), use_container_width=True)
+        with tag_col2:
+            st.button("[集数]", on_click=add_format_tag, args=("[集数]",), use_container_width=True)
+        with tag_col3:
+            st.button("[原]", on_click=add_format_tag, args=("[原]",), use_container_width=True)
+        with tag_col4:
+            st.button("🗑️ 清空", on_click=clear_format, use_container_width=True)
+        
         st.text_input("文件命名格式", key="cfg_NAME_FORMAT")
+
         st.text_input("字体名称", key="cfg_ASS_FONT")
         st.slider("字体大小", 10, 100, key="cfg_ASS_FONT_SIZE")
         st.slider("不透明度", 0.0, 1.0, key="cfg_ASS_OPACITY")
@@ -165,11 +182,10 @@ with st.sidebar:
 
 st.title("🎬 弹幕助手 Web Pro")
 
-# 搜索区域
 with st.form("search_form", clear_on_submit=False, border=False):
     col_main, col_btn = st.columns([4, 1], vertical_alignment="center")
     with col_main:
-        keyword = st.text_input("🔍 搜索动漫名称", placeholder="输入关键词并回车...", label_visibility="collapsed")
+        keyword = st.text_input("🔍 搜索动漫名称", placeholder="输入关键词并回车...", label_visibility="collapsed", key="search_keyword")
     with col_btn:
         btn_search = st.form_submit_button("开始搜索")
 
@@ -183,19 +199,23 @@ st.write("---")
 st.subheader("🖥️ 执行状态与控制")
 op_col1, op_col2, op_col3 = st.columns([1.5, 1.5, 1])
 
-# 资源预览逻辑
 current_eps = []
+is_movie_resource = False
 if has_eps:
     anime_display_list = []
     anime_map = {}
     for i, a in enumerate(st.session_state.current_animes):
+        first_ep_title = a['episodes'][0]['episodeTitle'] if a['episodes'] else ""
+        type_tag_match = re.search(r'【(电影|动漫|其他)】', first_ep_title)
+        type_tag = type_tag_match.group(0) if type_tag_match else ""
         plats = "".join(list(set(re.match(r'^([【\[].+?[\]】])', ep['episodeTitle']).group(1) if re.match(r'^([【\[].+?[\]】])', ep['episodeTitle']) else "【他】" for ep in a['episodes'])))
-        d_str = f"[{i+1}] {a['animeTitle']} {plats}"
+        d_str = f"[{i+1}] {a['animeTitle']} {type_tag} {plats}"
         anime_display_list.append(d_str)
         anime_map[d_str] = a
 
     selected_label = st.radio("选择资源：", anime_display_list)
     selected_anime = anime_map[selected_label]
+    is_movie_resource = "【电影】" in selected_label
     
     platform_map = {}
     for ep in selected_anime['episodes']:
@@ -209,7 +229,6 @@ if has_eps:
     with st.expander(f"📖 剧集预览 (共 {len(current_eps)} 集)", expanded=False):
         st.markdown("  \n".join([f"**[{i+1}]** {ep['episodeTitle']}" for i, ep in enumerate(current_eps)]))
 
-# 下载控制按钮
 if has_eps:
     if not st.session_state.is_running:
         if op_col1.button("🚀 开始下载并打包", type="primary"):
@@ -223,7 +242,6 @@ if has_eps:
             st.session_state.is_running = False
             st.rerun()
 
-# ⚠️ 停止后自动打包保存逻辑
 if not st.session_state.is_running and st.session_state.download_files:
     if len(st.session_state.download_files) == 1:
         fname = list(st.session_state.download_files.keys())[0]
@@ -237,7 +255,6 @@ if not st.session_state.is_running and st.session_state.download_files:
         st.session_state.final_zip = buf.getvalue()
         st.session_state.single_file = None
 
-# 下载按钮展示
 if st.session_state.final_zip:
     op_col2.download_button(label=f"💾 保存弹幕包 ({len(st.session_state.download_files)}集)", data=st.session_state.final_zip, file_name=f"{keyword}_弹幕包.zip", mime="application/zip")
 elif st.session_state.single_file:
@@ -252,12 +269,10 @@ log_area.markdown(f'<div class="log-container" id="log-box">{"<br>".join(st.sess
 st.components.v1.html("""<script>function sc(){var b=window.parent.document.getElementById('log-box');if(b)b.scrollTop=b.scrollHeight;}setInterval(sc,500);</script>""", height=0)
 
 # ================= 4. 后台逻辑 =================
-# 搜索逻辑 (修复日志显示问题)
 if btn_search and keyword:
-    st.session_state.logs = [] # 搜索前清空
+    st.session_state.logs = [] 
     update_realtime_log(f"正在发起搜索: {keyword} ...", log_area)
     try:
-        # 这里用 placeholder 确保日志在请求前渲染
         res = requests.get(f"{CONFIG['BASE_URL']}/api/v2/search/episodes", params={'anime': keyword}, timeout=10)
         data = res.json()
         st.session_state.current_animes = data.get('animes', [])[:CONFIG['SEARCH_MAX']]
@@ -266,7 +281,6 @@ if btn_search and keyword:
     except Exception as e:
         update_realtime_log(f"搜索失败: {str(e)}", log_area)
 
-# 下载逻辑
 if st.session_state.is_running and current_eps:
     indices = []
     try:
@@ -280,13 +294,44 @@ if st.session_state.is_running and current_eps:
 
     if indices:
         p_bar = st.progress(0)
-        for i, idx in enumerate(indices):
-            if not st.session_state.is_running: break # 检测停止
+        total_count = len(indices)
+        current_fmt = CONFIG['NAME_FORMAT']
+        current_keyword = st.session_state.search_keyword if st.session_state.search_keyword else keyword
+
+        # --- 新增：文件名重复检测预判 ---
+        if total_count > 1:
+            test_names = []
+            for idx in indices:
+                raw_title = current_eps[idx]['episodeTitle']
+                clean_raw_title = re.sub(r'^[【\[].+?[\]】]\s*', '', raw_title)
+                ep_tag = f"E{idx+1:02d}"
+                name = current_fmt.replace("[标题]", current_keyword).replace("[集数]", ep_tag).replace("[原]", clean_raw_title)
+                test_names.append(name)
             
+            # 如果去重后数量变少了，说明有重复
+            if len(set(test_names)) < total_count:
+                update_realtime_log("⚠️ 检测到命名格式会导致文件名重复，已自动追加[集数]以作区分。", log_area)
+                if "[集数]" not in current_fmt:
+                    current_fmt += "[集数]"
+        # ----------------------------
+
+        for i, idx in enumerate(indices):
+            if not st.session_state.is_running: break 
             ep_data = current_eps[idx]
-            ep_tag = f"E{idx+1:02d}"
-            save_name = CONFIG['NAME_FORMAT'].replace("[标题]", keyword).replace("[集数]", ep_tag)
-            save_name = re.sub(r'[\\/:*?"<>|]', '_', save_name).strip()
+            
+            raw_title = ep_data['episodeTitle']
+            clean_raw_title = re.sub(r'^[【\[].+?[\]】]\s*', '', raw_title)
+            
+            # 电影且单集时不加 E01
+            if is_movie_resource and total_count == 1:
+                ep_tag = ""
+            else:
+                ep_tag = f"E{idx+1:02d}"
+            
+            save_name = current_fmt.replace("[标题]", current_keyword).replace("[集数]", ep_tag).replace("[原]", clean_raw_title)
+            save_name = re.sub(r'\s+', ' ', save_name).strip()
+            save_name = re.sub(r'[\\/:*?"<>|]', '_', save_name)
+            
             suffix = ".ass" if CONFIG['SAVE_AS_ASS'] else ".xml"
             
             update_realtime_log(f"正在下载: {save_name}{suffix}", log_area)
