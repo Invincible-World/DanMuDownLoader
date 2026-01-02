@@ -13,6 +13,7 @@ DEFAULT_CONFIG = {
     "SEARCH_MAX": 15,
     "SAVE_AS_ASS": True,
     "ASS_FONT": "Microsoft YaHei",
+    "NAME_FORMAT": "[标题][集数]",
     "ASS_FONT_BOLD": True,
     "ASS_FONT_SIZE": 50,
     "ASS_DURATION": 25,
@@ -43,6 +44,7 @@ if "init" not in st.session_state:
         st.session_state[f"cfg_{k}"] = v
     st.session_state.init = True
 
+# 实时同步配置
 CONFIG = {k: st.session_state[f"cfg_{k}"] for k in DEFAULT_CONFIG.keys()}
 
 def reset_config_callback():
@@ -50,7 +52,7 @@ def reset_config_callback():
         st.session_state[f"cfg_{k}"] = v
     save_local_config(DEFAULT_CONFIG)
 
-# ================= 2. 核心转换算法 =================
+# ================= 2. 核心转换算法 (您的原始算法) =================
 def get_ass_opacity_hex(opacity_pct):
     try: alpha = int(255 * (1 - max(0.0, min(1.0, opacity_pct)))); return f"{alpha:02x}"
     except: return "00"
@@ -108,18 +110,19 @@ def convert_xml_to_ass(xml_content):
 if "logs" not in st.session_state: st.session_state.logs = []
 if "is_running" not in st.session_state: st.session_state.is_running = False
 if "final_zip" not in st.session_state: st.session_state.final_zip = None
+if "single_file" not in st.session_state: st.session_state.single_file = None
 if "download_files" not in st.session_state: st.session_state.download_files = {}
 
-def update_realtime_log(msg, placeholder):
+def update_realtime_log(msg, placeholder=None):
     current_time = datetime.now().strftime("%H:%M:%S")
     st.session_state.logs.append(f"[{current_time}] {msg}")
     if len(st.session_state.logs) > 60: st.session_state.logs.pop(0)
-    log_html = f'<div class="log-container" id="log-box">{"<br>".join(st.session_state.logs)}</div>'
-    placeholder.markdown(log_html, unsafe_allow_html=True)
+    if placeholder:
+        log_html = f'<div class="log-container" id="log-box">{"<br>".join(st.session_state.logs)}</div>'
+        placeholder.markdown(log_html, unsafe_allow_html=True)
 
 st.set_page_config(page_title="弹幕助手 Pro", page_icon="🎬", layout="centered")
 
-# CSS 注入：调整日志框样式以及让搜索按钮更大更显眼
 st.markdown("""
     <style>
     .log-container { 
@@ -127,12 +130,8 @@ st.markdown("""
         border: 2px solid #444; border-radius: 8px; padding: 10px; 
         font-family: monospace; font-size: 12px; line-height: 1.4; margin-bottom: 10px; 
     }
-    /* 让“开始搜索”按钮更高更醒目 */
     div[data-testid="stFormSubmitButton"] button {
-        height: 45px;
-        font-size: 18px !important;
-        background-color: #ff4b4b !important;
-        border-radius: 8px !important;
+        height: 45px; font-size: 18px !important; background-color: #ff4b4b !important; border-radius: 8px !important;
     }
     .stButton button { width: 100%; }
     </style>
@@ -150,6 +149,7 @@ with st.sidebar:
     st.write("---")
     with st.expander("🎨 弹幕样式 (ASS)", expanded=True):
         st.checkbox("保存为 ASS 格式", key="cfg_SAVE_AS_ASS")
+        st.text_input("文件命名格式", key="cfg_NAME_FORMAT")
         st.text_input("字体名称", key="cfg_ASS_FONT")
         st.slider("字体大小", 10, 100, key="cfg_ASS_FONT_SIZE")
         st.slider("不透明度", 0.0, 1.0, key="cfg_ASS_OPACITY")
@@ -165,56 +165,27 @@ with st.sidebar:
 
 st.title("🎬 弹幕助手 Web Pro")
 
-# --- 核心修改：使用 st.form 实现回车搜索，并通过 columns 实现垂直居中对齐 ---
-with st.container():
-    with st.form("search_form", clear_on_submit=False, border=False):
-        # 使用 vertical_alignment="center" 确保按钮和输入框在垂直方向居中对齐
-        col_main, col_btn = st.columns([4, 1], vertical_alignment="center")
-        
-        with col_main:
-            keyword = st.text_input("🔍 搜索动漫名称", placeholder="输入关键词并回车...", label_visibility="collapsed")
-        
-        with col_btn:
-            btn_search = st.form_submit_button("开始搜索")
-        
-        # 范围和格式放在输入框下方
-        c1, c2 = st.columns(2)
-        with c1: range_input = st.text_input("📥 下载范围 (0全部/1-5范围)", value="0")
-        with c2: naming_format = st.text_input("📝 命名格式", value="[标题][集数]")
+# 搜索区域
+with st.form("search_form", clear_on_submit=False, border=False):
+    col_main, col_btn = st.columns([4, 1], vertical_alignment="center")
+    with col_main:
+        keyword = st.text_input("🔍 搜索动漫名称", placeholder="输入关键词并回车...", label_visibility="collapsed")
+    with col_btn:
+        btn_search = st.form_submit_button("开始搜索")
+
+has_eps = "current_animes" in st.session_state and st.session_state.current_animes
+
+if has_eps:
+    st.write("---")
+    range_input = st.text_input("📥 下载范围 (0全部/1-5范围/序号)", value="0")
 
 st.write("---")
 st.subheader("🖥️ 执行状态与控制")
 op_col1, op_col2, op_col3 = st.columns([1.5, 1.5, 1])
 
-has_eps = "current_animes" in st.session_state and st.session_state.current_animes
-if has_eps:
-    if not st.session_state.is_running:
-        if op_col1.button("🚀 开始下载并打包", type="primary"):
-            st.session_state.is_running = True
-            st.session_state.download_files = {}
-            st.session_state.final_zip = None
-            st.rerun()
-    else:
-        if op_col1.button("🛑 停止下载", type="secondary"):
-            st.session_state.is_running = False
-            st.rerun()
-
-if st.session_state.final_zip:
-    op_col2.download_button(label=f"💾 保存弹幕 ({len(st.session_state.download_files)}集)", data=st.session_state.final_zip, file_name=f"{keyword}_弹幕包.zip", mime="application/zip")
-
-if op_col3.button("🧹 清理"):
-    st.session_state.logs = []; st.session_state.final_zip = None; st.session_state.download_files = {}; st.session_state.is_running = False; st.rerun()
-
-log_area = st.empty()
-log_area.markdown(f'<div class="log-container" id="log-box">{"<br>".join(st.session_state.logs) if st.session_state.logs else "等待任务启动..."}</div>', unsafe_allow_html=True)
-st.components.v1.html("""<script>function sc(){var b=window.parent.document.getElementById('log-box');if(b)b.scrollTop=b.scrollHeight;}setInterval(sc,500);</script>""", height=0)
-
-st.write("---")
-
-# --- 资源选择 ---
+# 资源预览逻辑
 current_eps = []
 if has_eps:
-    st.subheader("🎯 资源与平台选择")
     anime_display_list = []
     anime_map = {}
     for i, a in enumerate(st.session_state.current_animes):
@@ -235,55 +206,98 @@ if has_eps:
     p_choice = st.selectbox("选择来源平台", list(platform_map.keys()))
     current_eps = platform_map[p_choice]
 
-    with st.expander(f"📖 剧集参考预览 (共 {len(current_eps)} 集)", expanded=False):
+    with st.expander(f"📖 剧集预览 (共 {len(current_eps)} 集)", expanded=False):
         st.markdown("  \n".join([f"**[{i+1}]** {ep['episodeTitle']}" for i, ep in enumerate(current_eps)]))
 
+# 下载控制按钮
+if has_eps:
+    if not st.session_state.is_running:
+        if op_col1.button("🚀 开始下载并打包", type="primary"):
+            st.session_state.is_running = True
+            st.session_state.download_files = {}
+            st.session_state.final_zip = None
+            st.session_state.single_file = None
+            st.rerun()
+    else:
+        if op_col1.button("🛑 停止下载", type="secondary"):
+            st.session_state.is_running = False
+            st.rerun()
+
+# ⚠️ 停止后自动打包保存逻辑
+if not st.session_state.is_running and st.session_state.download_files:
+    if len(st.session_state.download_files) == 1:
+        fname = list(st.session_state.download_files.keys())[0]
+        st.session_state.single_file = (fname, st.session_state.download_files[fname])
+        st.session_state.final_zip = None
+    else:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED) as zf:
+            for fname, fdata in st.session_state.download_files.items():
+                zf.writestr(fname, fdata)
+        st.session_state.final_zip = buf.getvalue()
+        st.session_state.single_file = None
+
+# 下载按钮展示
+if st.session_state.final_zip:
+    op_col2.download_button(label=f"💾 保存弹幕包 ({len(st.session_state.download_files)}集)", data=st.session_state.final_zip, file_name=f"{keyword}_弹幕包.zip", mime="application/zip")
+elif st.session_state.single_file:
+    f_name, f_data = st.session_state.single_file
+    op_col2.download_button(label=f"💾 保存弹幕文件", data=f_data, file_name=f_name, mime="text/plain")
+
+if op_col3.button("🧹 清理"):
+    st.session_state.logs = []; st.session_state.final_zip = None; st.session_state.single_file = None; st.session_state.download_files = {}; st.session_state.is_running = False; st.rerun()
+
+log_area = st.empty()
+log_area.markdown(f'<div class="log-container" id="log-box">{"<br>".join(st.session_state.logs) if st.session_state.logs else "等待任务启动..."}</div>', unsafe_allow_html=True)
+st.components.v1.html("""<script>function sc(){var b=window.parent.document.getElementById('log-box');if(b)b.scrollTop=b.scrollHeight;}setInterval(sc,500);</script>""", height=0)
+
 # ================= 4. 后台逻辑 =================
-# 注意：现在触发逻辑改成了 btn_search (Form Submit)
+# 搜索逻辑 (修复日志显示问题)
 if btn_search and keyword:
-    st.session_state.logs = []
-    update_realtime_log(f"正在搜索: {keyword} ...", log_area)
+    st.session_state.logs = [] # 搜索前清空
+    update_realtime_log(f"正在发起搜索: {keyword} ...", log_area)
     try:
+        # 这里用 placeholder 确保日志在请求前渲染
         res = requests.get(f"{CONFIG['BASE_URL']}/api/v2/search/episodes", params={'anime': keyword}, timeout=10)
-        st.session_state.current_animes = res.json().get('animes', [])[:CONFIG['SEARCH_MAX']]
+        data = res.json()
+        st.session_state.current_animes = data.get('animes', [])[:CONFIG['SEARCH_MAX']]
         update_realtime_log(f"搜索成功: 找到 {len(st.session_state.current_animes)} 条资源。", log_area)
         st.rerun()
-    except Exception as e: update_realtime_log(f"搜索失败: {str(e)}", log_area)
+    except Exception as e:
+        update_realtime_log(f"搜索失败: {str(e)}", log_area)
 
+# 下载逻辑
 if st.session_state.is_running and current_eps:
     indices = []
     try:
-        if range_input == "0": indices = list(range(len(current_eps)))
-        else:
-            if "-" in range_input:
-                s_n, e_n = map(int, range_input.split("-"))
-                indices = [i for i in range(s_n-1, e_n) if 0 <= i < len(current_eps)]
-            else: indices = [int(range_input)-1] if 0 < int(range_input) <= len(current_eps) else []
-    except: pass
+        clean_range = range_input.strip()
+        if clean_range == "0": indices = list(range(len(current_eps)))
+        elif "-" in clean_range:
+            s_n, e_n = map(int, clean_range.split("-"))
+            indices = [i for i in range(s_n-1, e_n) if 0 <= i < len(current_eps)]
+        else: indices = [int(clean_range)-1] if 0 < int(clean_range) <= len(current_eps) else []
+    except: st.session_state.is_running = False; st.rerun()
 
     if indices:
         p_bar = st.progress(0)
         for i, idx in enumerate(indices):
-            if not st.session_state.is_running: break
+            if not st.session_state.is_running: break # 检测停止
+            
             ep_data = current_eps[idx]
             ep_tag = f"E{idx+1:02d}"
-            save_name = re.sub(r'[\\/:*?"<>|]', '_', naming_format.replace("[标题]", keyword).replace("[集数]", ep_tag)).strip()
+            save_name = CONFIG['NAME_FORMAT'].replace("[标题]", keyword).replace("[集数]", ep_tag)
+            save_name = re.sub(r'[\\/:*?"<>|]', '_', save_name).strip()
+            suffix = ".ass" if CONFIG['SAVE_AS_ASS'] else ".xml"
             
-            is_ass = CONFIG['SAVE_AS_ASS']
-            suffix = ".ass" if is_ass else ".xml"
             update_realtime_log(f"正在下载: {save_name}{suffix}", log_area)
-            
             try:
                 r = requests.get(f"{CONFIG['BASE_URL']}/api/v2/comment/{ep_data['episodeId']}", params={'format': 'xml'}, timeout=12)
-                content = convert_xml_to_ass(r.text) if is_ass else r.text
+                content = convert_xml_to_ass(r.text) if CONFIG['SAVE_AS_ASS'] else r.text
                 if content:
                     st.session_state.download_files[f"{save_name}{suffix}"] = content
-                    buf = io.BytesIO()
-                    with zipfile.ZipFile(buf, "a", zipfile.ZIP_DEFLATED) as zf:
-                        for fname, fdata in st.session_state.download_files.items(): zf.writestr(fname, fdata)
-                    st.session_state.final_zip = buf.getvalue()
-            except: update_realtime_log(f"失败: {save_name}{suffix}", log_area)
+            except: pass
             p_bar.progress((i + 1) / len(indices))
+        
         st.session_state.is_running = False
-        update_realtime_log("任务全部完成！", log_area)
+        update_realtime_log("任务操作结束。", log_area)
         st.rerun()
